@@ -1,0 +1,20 @@
+{
+    "name": "sbehnfeldt/cochrane-crawler",
+    "description": "Command-line application to gather and store URLs and associated metadata from the Cochrane Library review collection",
+    "type": "project",
+    "autoload": {
+        "psr-4": {
+            "Sbehnfeldt\\CochraneCrawler\\": "src/"
+        }
+    },
+    "authors": [
+        {
+            "name": "Stephen",
+            "email": "stephen@behnfeldt.pro"
+        }
+    ],
+    "require": {
+        "guzzlehttp/guzzle": "^7.8",
+        "paquettg/php-html-parser": "^2.2"
+    }
+}
