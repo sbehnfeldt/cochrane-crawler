@@ -4,8 +4,10 @@ namespace Sbehnfeldt\CochraneCrawler;
 
 use Exception;
 use GuzzleHttp\Client;
+use GuzzleHttp\Promise\PromiseInterface;
 use PHPHtmlParser\Dom;
 use PHPHtmlParser\Dom\HtmlNode;
+use Psr\Http\Message\ResponseInterface;
 
 class Crawler
 {
@@ -64,11 +66,23 @@ class Crawler
     }
 
 
+    public function fetchReviews(string $url)
+    {
+        return $this->getClient()->getAsync($url);
+    }
+
+    public function processReviews(ResponseInterface $response)
+    {
+        $body     = $response->getBody();
+        $contents = $body->getContents();
+        return;
+    }
+
     public function getReviews(string $url, bool $follow = false): ?array
     {
         $summary = [];
         try {
-            $response = $this->getClient()->get($url);
+            $response = $this->getClient()->getAsync($url);
             $body     = $response->getBody();
             $contents = $body->getContents();
 

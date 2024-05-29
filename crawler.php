@@ -3,6 +3,8 @@
 namespace Sbehnfeldt\CochraneCrawler;
 
 use Exception;
+use GuzzleHttp\Promise;
+use GuzzleHttp\Promise\Each;
 use PHPHtmlParser\Dom;
 
 
@@ -16,21 +18,30 @@ try {
     $summary = [];
     $dom     = new Dom();
     $it      = $topics->getIterator();
-    echo("Found " . count($topics) . " topics....\n");
-    $nTopic = 1;
+
+    $topics = [];
+    $promises = [];
     while ($it->valid()) {
         $dom->loadStr($it->current());
-        $link   = $dom->find('a');
-        $href   = $link->getAttribute('href');
+        $link = $dom->find('a');
+        $href = $link->getAttribute('href');
         $button = $dom->find('button');
-        $topic  = $button->innerHtml;
-        echo("   Crawling topic {$nTopic}: \"{$topic}\" - ");
-        $summary[$topic] = $crawler->getReviews($href, true);
-        echo("\n");
+        $topics[] = $button->innerHtml;
 
-        $nTopic++;
+        $promises[] = $crawler->fetchReviews($href);
         $it->next();
     }
+
+    Each::of(
+        $promises,
+        function ($response, $index) use ($crawler) {
+            $crawler->processReviews($response);
+        },
+        function ($reason, $index) use ($topics) {
+            echo(" FAILED: {$topics[$index]}\n");
+            echo $reason->getMessage() . "\n";
+        }
+    )->wait();
 } catch (Exception $e) {
     var_dump($e);
     exit($e->getMessage());
@@ -46,3 +57,4 @@ foreach ($summary as $topic => $reviews) {
     }
 }
 fclose($f);
+exit("Done\n");
