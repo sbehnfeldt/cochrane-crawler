@@ -7,13 +7,13 @@ use GuzzleHttp\Client;
 use GuzzleHttp\Exception\GuzzleException;
 use GuzzleHttp\Promise\Each;
 use PHPHtmlParser\Dom;
-use PHPHtmlParser\Dom\Collection;
 use PHPHtmlParser\Dom\HtmlNode;
 use PHPHtmlParser\Exceptions\ChildNotFoundException;
 use PHPHtmlParser\Exceptions\CircularException;
 use PHPHtmlParser\Exceptions\NotLoadedException;
 use PHPHtmlParser\Exceptions\StrictException;
 use Psr\Http\Message\ResponseInterface;
+
 
 /**
  * Object for crawling the Cochrane website.
@@ -113,6 +113,7 @@ class Crawler
             $this->parseTopicsPage($topicsPageContents);
             $this->fetchEachTopicFrontPage();
             $this->fetchAllTopicSubpages();
+            $this->parseTopicSubpages();
         } catch (GuzzleException $e) {
             echo(sprintf('Fatal error loading Cochrane library topics page "%s"', $topicsUrl));
             exit($e->getMessage());
@@ -122,6 +123,13 @@ class Crawler
         }
 
         return;
+    }
+
+    public function getNextSummary()
+    {
+        for ($i = 0; $i < count($this->summary); $i++) {
+            yield $this->summary[$i];
+        }
     }
 
 
@@ -305,6 +313,16 @@ class Crawler
         return;
     }
 
+    public function parseTopicSubpages()
+    {
+        foreach ($this->topics as $topic) {
+            echo(sprintf('Scanning subpages for topic "%s"... ', $topic['topic']) . "\n");
+            foreach ($topic['contents'] as $subpage) {
+                $this->parseTopicSubPage($topic['topic'], $subpage);
+            }
+        }
+    }
+
 
     /**
      * Get the contents
@@ -317,87 +335,25 @@ class Crawler
      * @throws ChildNotFoundException
      * @throws NotLoadedException
      */
-    public function parseTopicPage(string $topic, ResponseInterface $response, bool $follow = false)
+    public function parseTopicSubPage(string $topic, string $contents)
     {
-        echo "Parsing Topic page: $topic\n";
-        $body     = $response->getBody();
-        $contents = $body->getContents();
+        echo("   $topic subpage: ");
         $this->getDom()->loadStr($contents);
-
-
         $reviewItems = $this->getDom()->find('.search-results-item');
         foreach ($reviewItems as $item) {
-            $this->summary[] = $this->getReview($item);
+            echo "item... ";
+            $this->summary[] = $this->getReview($topic, $item);
         }
+        echo("\n");
     }
 
-    public function fetchReviews(string $url)
+    public function getReview($topic, HtmlNode $review): array
     {
-        return $this->getGuzzleClient()->getAsync($url);
-    }
-
-
-    public function getReviews(string $url, bool $follow = false): ?array
-    {
-        $summary = [];
-        try {
-            $response = $this->getGuzzleClient()->getAsync($url);
-            $body     = $response->getBody();
-            $contents = $body->getContents();
-
-            $dom = new Dom();
-            $dom->loadStr($contents);
-
-            $n = 1;
-
-            if ($follow) {
-                $pages = $dom->find('ul.pagination-page-list li.pagination-page-list-item');
-                if ($pages) {
-                    echo(count($pages) . " page(s): ");
-                } else {
-                    echo("1 page: ");
-                }
-                echo("$n... ");
-                $n++;
-            }
-
-            $reviews = $dom->find('.search-results-item');
-            foreach ($reviews as $review) {
-                $this->summary[] = $this->getReview($review);
-            }
-
-            if ($follow) {
-                /** @var HtmlNode $page */
-                foreach ($pages as $page) {
-                    $classes = explode(' ', $page->getAttribute('class'));
-                    if (in_array('active', $classes)) {
-                        continue;
-                    }
-                    $links = $page->find('a');
-                    if ($links) {
-                        /** @var HtmlNode $link */
-                        $link = $links[0];
-                        $href = $link->getAttribute('href');
-                        echo("$n... ");
-                        $n++;
-                        $summary = array_merge($summary, $this->getReviews($href, false));
-                    }
-                }
-            }
-        } catch (Exception $e) {
-            echo $e->getMessage() . "\n";
-        }
-
-        return $summary;
-    }
-
-
-    public function getReview(HtmlNode $review): array
-    {
-        $summary = [];
+        $summary = [
+            'topic' => $topic,
+        ];
         try {
             $link = $review->find('.search-results-item-body h3.result-title a');
-
             if ($link) {
                 /** @var HtmlNode $node */
                 $node             = $link[0];
@@ -428,4 +384,61 @@ class Crawler
 
         return $summary;
     }
+
+
+//    public function getReviews(string $url, bool $follow = false): ?array
+//    {
+//        $summary = [];
+//        try {
+//            $response = $this->getGuzzleClient()->getAsync($url);
+//            $body     = $response->getBody();
+//            $contents = $body->getContents();
+//
+//            $dom = new Dom();
+//            $dom->loadStr($contents);
+//
+//            $n = 1;
+//
+//            if ($follow) {
+//                $pages = $dom->find('ul.pagination-page-list li.pagination-page-list-item');
+//                if ($pages) {
+//                    echo(count($pages) . " page(s): ");
+//                } else {
+//                    echo("1 page: ");
+//                }
+//                echo("$n... ");
+//                $n++;
+//            }
+//
+//            $reviews = $dom->find('.search-results-item');
+//            foreach ($reviews as $review) {
+//                $this->summary[] = $this->getReview($review);
+//            }
+//
+//            if ($follow) {
+//                /** @var HtmlNode $page */
+//                foreach ($pages as $page) {
+//                    $classes = explode(' ', $page->getAttribute('class'));
+//                    if (in_array('active', $classes)) {
+//                        continue;
+//                    }
+//                    $links = $page->find('a');
+//                    if ($links) {
+//                        /** @var HtmlNode $link */
+//                        $link = $links[0];
+//                        $href = $link->getAttribute('href');
+//                        echo("$n... ");
+//                        $n++;
+//                        $summary = array_merge($summary, $this->getReviews($href, false));
+//                    }
+//                }
+//            }
+//        } catch (Exception $e) {
+//            echo $e->getMessage() . "\n";
+//        }
+//
+//        return $summary;
+//    }
+
+
 }
