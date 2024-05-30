@@ -111,6 +111,7 @@ class Crawler
         try {
             $topicsPageContents = $this->fetchTopicsPage($topicsUrl);
             $this->parseTopicsPage($topicsPageContents);
+            $this->fetchEachTopicFrontPage();
         } catch (GuzzleException $e) {
             echo(sprintf('Fatal error loading Cochrane library topics page "%s"', $topicsUrl));
             exit($e->getMessage());
@@ -119,27 +120,7 @@ class Crawler
             exit($e->getMessage());
         }
 
-        // We now have the URL for page 1 for each topic; turn this into a promise.
-        $promises = [];
-        foreach ($this->topics as $i => &$data) {
-            $promises[] = $this->getGuzzleClient()->getAsync($data['urls'][0]);
-        }
-
-        // We now have a promise for page 1 for each topic (in the same order as $this->topics);
-        // resolve by scanning the page for pagination links.
-        $crawler = $this;
-        Each::of(
-            $promises,
-            function ($response, $i) use ($crawler) {
-                $crawler->parseFrontTopicPage($response, $i, false);
-            },
-            function ($reason, $index) {
-                echo("Failed index $index: \n");
-                echo($reason->getMessage());
-            }
-        )->wait();
-
-        exit();
+        return;
     }
 
 
@@ -199,12 +180,35 @@ class Crawler
         return;
     }
 
+    public function fetchEachTopicFrontPage()
+    {
+        $promises = [];
+        foreach ($this->topics as $i => &$data) {
+            $promises[] = $this->getGuzzleClient()->getAsync($data['urls'][0]);
+        }
+
+        // We now have a promise for page 1 for each topic (in the same order as $this->topics);
+        // resolve by scanning the page for pagination links.
+        $crawler = $this;
+        Each::of(
+            $promises,
+            function ($response, $i) use ($crawler) {
+                $crawler->parseFrontTopicPage($response, $i, false);
+            },
+            function ($reason, $index) {
+                echo("Failed index $index: \n");
+                echo($reason->getMessage());
+            }
+        )->wait();
+
+    }
+
     public function parseFrontTopicPage($response, $i)
     {
         $topic     = $this->topics[$i];
         $topicName = $topic['topic'];
 
-        echo(sprintf('Scanning page "%s" for pagination URLs...', $topicName));
+        echo(sprintf('Scanning page "%s" for pagination URLs... ', $topicName));
 
         $body     = $response->getBody();
         $contents = $body->getContents();
@@ -228,7 +232,7 @@ class Crawler
             $it->next();
         }
 
-        echo(sprintf("%d pages\n", count($this->topics[$i]['urls'])));
+        echo(sprintf("%d page(s)\n", count($this->topics[$i]['urls'])));
 
         return;
     }

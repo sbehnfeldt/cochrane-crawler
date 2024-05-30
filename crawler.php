@@ -21,3 +21,5 @@ $crawler->crawl('http://www.cochranelibrary.com/home/topic-and-review-group-list
 //}
 //fclose($f);
 //exit("Done\n");
+echo("Done\n");
+exit(0);
