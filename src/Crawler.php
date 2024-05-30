@@ -112,7 +112,7 @@ class Crawler
             $topicsPageContents = $this->fetchTopicsPage($topicsUrl);
             $this->parseTopicsPage($topicsPageContents);
             $this->fetchEachTopicFrontPage();
-            $this->fetchTopicSubpages();
+            $this->fetchAllTopicSubpages();
         } catch (GuzzleException $e) {
             echo(sprintf('Fatal error loading Cochrane library topics page "%s"', $topicsUrl));
             exit($e->getMessage());
@@ -187,6 +187,7 @@ class Crawler
         foreach ($this->topics as $i => &$data) {
             $promises[] = $this->getGuzzleClient()->getAsync($data['urls'][0]);
         }
+        echo(sprintf('Preparing to download front pages for %d topics...', count($promises)) . "\n");
 
         // We now have a promise for page 1 for each topic (in the same order as $this->topics);
         // resolve by scanning the page for pagination links.
@@ -194,24 +195,41 @@ class Crawler
         Each::of(
             $promises,
             function ($response, $i) use ($crawler) {
-                $crawler->parseFrontTopicPage($response, $i, false);
+                $crawler->parseTopicFrontPage($response, $i, false);
             },
             function ($reason, $index) {
                 echo("Failed index $index: \n");
                 echo($reason->getMessage());
             }
         )->wait();
+
+        return;
     }
 
-    public function parseFrontTopicPage($response, $i)
+    /**
+     * Parse "Page 1" for a topic and search the DOM for "Paging" navigation links, to retrieve the URLs for the sub-pages for this topic
+     *
+     * @param $response
+     * @param $i
+     *
+     * @return void
+     * @throws ChildNotFoundException
+     * @throws CircularException
+     * @throws NotLoadedException
+     * @throws StrictException
+     */
+    public function parseTopicFrontPage($response, $i)
     {
+        static $count = 1;
         $topic     = $this->topics[$i];
         $topicName = $topic['topic'];
 
-        echo(sprintf('Scanning page "%s" for pagination URLs... ', $topicName));
+        echo(sprintf('Scanning page "%d) %s" for pagination URLs... ', $count++, $topicName));
 
         $body                           = $response->getBody();
         $this->topics[$i]['contents'][] = $body->getContents();
+
+        // Now parse the contents of the page and scan it for all sub-pages (found in the Paging navigation control)
         $this->getDom()->loadStr($this->topics[$i]['contents'][0]);
         $paginationItems = $this->getDom()->find('ul.pagination-page-list li.pagination-page-list-item');
         $it              = $paginationItems->getIterator();
@@ -230,53 +248,61 @@ class Crawler
 
             $it->next();
         }
+        echo(sprintf("%d pages(s)\n", count($this->topics[$i]['urls'])));
 
-        echo(sprintf("%d URL(s)\n", count($this->topics[$i]['urls'])));
+        // We now have the contents for the front page, so we can erase the URL for it, so we never try to fetch it again
+//        $this->topics[$i]['urls'] = [];
+        array_shift($this->topics[$i]['urls']);
+
 
         return;
     }
 
-    public function fetchTopicSubpages()
+    /**
+     * Having found the URLs for all subpages for all topics, download those pages for further processing
+     *
+     * @return void
+     */
+    public function fetchAllTopicSubpages()
     {
-        $crawler = $this;
-        foreach ($this->topics as $i => $topic) {
-            echo(sprintf(
-                '%d) Fetching %d subpages for topic "%s"...',
-                $i + 1,
-                count($topic['urls']) - 1,
-                $topic['topic']
-            ));
+        foreach ($this->topics as $i => &$topic) {
+            while (count($topic['urls']) > 0) {
+                echo(sprintf(
+                    '%d) Fetching %d subpage(s) for topic "%s"... ',
+                    $i + 1,
+                    count($topic['urls']),
+                    $topic['topic']
+                ));
 
-            $promises = [];
-            // Start from 1 (not 0) since we have already downloaded the front page
-            for ($j = 1; $j < count($topic['urls']); $j++) {
-                $promises[] = $this->getGuzzleClient()->getAsync($topic['urls'][$j]);
-            }
-
-            Each::of(
-                $promises,
-                function (ResponseInterface $response, $j) use ($crawler, $i) {
-                    echo("Handling promise $j\n");
-                    $body                                    = $response->getBody();
-                    $crawler->topics[$i]['contents'][$j + 1] = $body->getContents();
-                },
-                function ($reason, $j) use ($crawler, $i) {
-                    echo("Failed index $j: ");
-                    echo($reason->getMessage() . "\n");
-                    $crawler->topics[$i]['contents'][$j + 1] = $reason->getMessage();
+                $promises = [];
+                for ($j = 0; $j < count($topic['urls']); $j++) {
+                    $promises[] = $this->getGuzzleClient()->getAsync($topic['urls'][$j]);
                 }
-            )->wait();
-            continue;
+
+                Each::of(
+                    $promises,
+                    function (ResponseInterface $response, $j) use (&$topic, $i) {
+                        echo(sprintf("sub-page %d... ", $j + 1));
+                        $body                = $response->getBody();
+                        $topic['contents'][] = $body->getContents();   // Append this page (ordering is not important)
+                        $topic['urls'][$j]   = null;                   // Erase a URL which has been successfully fetched
+                    },
+                    function ($reason, $j) use (&$topic) {
+                        echo(sprintf("sub-page %d FAILED ({$reason->getCode()})... ", $j + 1));
+                        $topic['contents'][$j + 1] = $reason->getMessage();
+                    }
+                )->wait();
+
+
+                // Remove all the empty values from the URL arrays
+                $topic['urls'] = array_filter($topic['urls']);
+                $topic['urls'] = array_values($topic['urls']);
+
+                echo("\n");
+            }
         }
 
-
         return;
-    }
-
-
-    public function fetchTopicPage($url)
-    {
-        return $this->getGuzzleClient()->getAsync($url);
     }
 
 
