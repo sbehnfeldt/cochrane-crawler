@@ -112,6 +112,7 @@ class Crawler
             $topicsPageContents = $this->fetchTopicsPage($topicsUrl);
             $this->parseTopicsPage($topicsPageContents);
             $this->fetchEachTopicFrontPage();
+            $this->fetchTopicSubpages();
         } catch (GuzzleException $e) {
             echo(sprintf('Fatal error loading Cochrane library topics page "%s"', $topicsUrl));
             exit($e->getMessage());
@@ -169,9 +170,8 @@ class Crawler
             $this->topics[] = [
                 'topic'    => $button->innerHtml,
                 'urls'     => [$href],
-                'promises' => [],
                 'contents' => [],
-                'doms'     => []
+                'reviews'  => []
             ];
 
             $it->next();
@@ -179,6 +179,7 @@ class Crawler
 
         return;
     }
+
 
     public function fetchEachTopicFrontPage()
     {
@@ -200,7 +201,6 @@ class Crawler
                 echo($reason->getMessage());
             }
         )->wait();
-
     }
 
     public function parseFrontTopicPage($response, $i)
@@ -210,9 +210,9 @@ class Crawler
 
         echo(sprintf('Scanning page "%s" for pagination URLs... ', $topicName));
 
-        $body     = $response->getBody();
-        $contents = $body->getContents();
-        $this->getDom()->loadStr($contents);
+        $body                           = $response->getBody();
+        $this->topics[$i]['contents'][] = $body->getContents();
+        $this->getDom()->loadStr($this->topics[$i]['contents'][0]);
         $paginationItems = $this->getDom()->find('ul.pagination-page-list li.pagination-page-list-item');
         $it              = $paginationItems->getIterator();
         while ($it->valid()) {
@@ -225,14 +225,50 @@ class Crawler
                     $link                       = $links[0];
                     $href                       = $link->getAttribute('href');
                     $this->topics[$i]['urls'][] = $href;
-//                $summary = array_merge($summary, $this->getReviews($href, false));
                 }
             }
 
             $it->next();
         }
 
-        echo(sprintf("%d page(s)\n", count($this->topics[$i]['urls'])));
+        echo(sprintf("%d URL(s)\n", count($this->topics[$i]['urls'])));
+
+        return;
+    }
+
+    public function fetchTopicSubpages()
+    {
+        $crawler = $this;
+        foreach ($this->topics as $i => $topic) {
+            echo(sprintf(
+                '%d) Fetching %d subpages for topic "%s"...',
+                $i + 1,
+                count($topic['urls']) - 1,
+                $topic['topic']
+            ));
+
+            $promises = [];
+            // Start from 1 (not 0) since we have already downloaded the front page
+            for ($j = 1; $j < count($topic['urls']); $j++) {
+                $promises[] = $this->getGuzzleClient()->getAsync($topic['urls'][$j]);
+            }
+
+            Each::of(
+                $promises,
+                function (ResponseInterface $response, $j) use ($crawler, $i) {
+                    echo("Handling promise $j\n");
+                    $body                                    = $response->getBody();
+                    $crawler->topics[$i]['contents'][$j + 1] = $body->getContents();
+                },
+                function ($reason, $j) use ($crawler, $i) {
+                    echo("Failed index $j: ");
+                    echo($reason->getMessage() . "\n");
+                    $crawler->topics[$i]['contents'][$j + 1] = $reason->getMessage();
+                }
+            )->wait();
+            continue;
+        }
+
 
         return;
     }
