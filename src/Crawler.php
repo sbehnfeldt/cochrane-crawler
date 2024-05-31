@@ -6,6 +6,7 @@ use Exception;
 use GuzzleHttp\Client;
 use GuzzleHttp\Exception\GuzzleException;
 use GuzzleHttp\Promise\Each;
+use GuzzleHttp\Promise;
 use PHPHtmlParser\Dom;
 use PHPHtmlParser\Dom\HtmlNode;
 use PHPHtmlParser\Exceptions\ChildNotFoundException;
@@ -232,7 +233,7 @@ class Crawler
         $topic     = $this->topics[$i];
         $topicName = $topic['topic'];
 
-        echo(sprintf('Scanning page "%d) %s" for pagination URLs... ', $count++, $topicName));
+        echo(sprintf('Scanning page %d, "%s," for pagination URLs... ', $count++, $topicName));
 
         $body                           = $response->getBody();
         $this->topics[$i]['contents'][] = $body->getContents();
@@ -287,20 +288,19 @@ class Crawler
                     $promises[] = $this->getGuzzleClient()->getAsync($topic['urls'][$j]);
                 }
 
-                Each::of(
-                    $promises,
-                    function (ResponseInterface $response, $j) use (&$topic, $i) {
-                        echo(sprintf("sub-page %d... ", $j + 1));
-                        $body                = $response->getBody();
+                $responses = Promise\Utils::settle($promises)->wait();
+                foreach ($responses as $k => $response) {
+                    echo(sprintf("sub-page %d... ", $k + 1));
+                    if ('fulfilled' === $response['state']) {
+                        $body                = $response['value']->getBody();
                         $topic['contents'][] = $body->getContents();   // Append this page (ordering is not important)
-                        $topic['urls'][$j]   = null;                   // Erase a URL which has been successfully fetched
-                    },
-                    function ($reason, $j) use (&$topic) {
+                        $topic['urls'][$k]   = null;                   // Erase a URL which has been successfully fetched
+                    } else {
+                        $reason = $response['value'];
                         echo(sprintf("sub-page %d FAILED ({$reason->getCode()})... ", $j + 1));
                         $topic['contents'][$j + 1] = $reason->getMessage();
                     }
-                )->wait();
-
+                }
 
                 // Remove all the empty values from the URL arrays
                 $topic['urls'] = array_filter($topic['urls']);
