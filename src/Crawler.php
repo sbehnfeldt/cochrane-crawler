@@ -5,7 +5,6 @@ namespace Sbehnfeldt\CochraneCrawler;
 use Exception;
 use GuzzleHttp\Client;
 use GuzzleHttp\Exception\GuzzleException;
-use GuzzleHttp\Promise\Each;
 use GuzzleHttp\Promise;
 use PHPHtmlParser\Dom;
 use PHPHtmlParser\Dom\HtmlNode;
@@ -13,7 +12,6 @@ use PHPHtmlParser\Exceptions\ChildNotFoundException;
 use PHPHtmlParser\Exceptions\CircularException;
 use PHPHtmlParser\Exceptions\NotLoadedException;
 use PHPHtmlParser\Exceptions\StrictException;
-use Psr\Http\Message\ResponseInterface;
 
 
 /**
@@ -70,6 +68,8 @@ class Crawler
      * Get the Guzzle library client object for performing HTTP communication.
      *
      * @return Client
+     *
+     * This pattern provides a default client, if none is provided ahead of time.
      */
     public function getGuzzleClient(): Client
     {
@@ -107,15 +107,19 @@ class Crawler
         $this->dom = $dom;
     }
 
-    public function crawl(string $topicsUrl)
+    /**
+     * Crawl the Cochrane review website.  Main entry point for the Crawler.
+     *
+     * @param  string  $topicsUrl  URL of the Cochrane Library "Browse by Topic" page
+     *
+     * @return void
+     */
+    public function crawl(string $topicsUrl): void
     {
         try {
             $topicsPageContents = $this->fetchTopicsPage($topicsUrl);
             $this->parseTopicsBrowsePage($topicsPageContents);
             $this->crawlAllTopics();
-//            $this->fetchEachTopicFrontPage();
-//            $this->fetchAllTopicSubpages();
-//            $this->parseTopicSubpages();
         } catch (GuzzleException $e) {
             echo(sprintf('Fatal error loading Cochrane library topics page "%s"', $topicsUrl));
             exit($e->getMessage());
@@ -127,6 +131,13 @@ class Crawler
         return;
     }
 
+    /**
+     * Iterate through the review summaries.
+     *
+     * This function is intended to be called after the crawling has been done.
+     *
+     * @return \Generator
+     */
     public function getNextSummary()
     {
         for ($i = 0; $i < count($this->summary); $i++) {
@@ -141,13 +152,13 @@ class Crawler
      * @param  string  $url  URL of the Cochrane "Topics" page.
      *
      * @return string Raw contents of the Cochrane "Topics" page.
-     * @throws \GuzzleHttp\Exception\GuzzleException
+     * @throws GuzzleException
      */
     public function fetchTopicsPage(string $url): string
     {
         // During dev, it is often convenient to break apart chainable calls
-        // to inspect the values step-by-step.  It is makes the code clearer,
-        // benefiting the maintenance staff.
+        // to inspect the values step-by-step.  It also makes the code clearer,
+        // subsequently benefiting the maintenance staff.
         $response = $this->getGuzzleClient()->get($url);
         $body     = $response->getBody();
         $contents = $body->getContents();
@@ -190,6 +201,17 @@ class Crawler
         return;
     }
 
+    /**
+     * Having scanned the "Browse by Topics" page, follow the links found therein,
+     * looking for reviews.
+     *
+     * @return void
+     * @throws ChildNotFoundException
+     * @throws CircularException
+     * @throws GuzzleException
+     * @throws NotLoadedException
+     * @throws StrictException
+     */
     public function crawlAllTopics()
     {
         foreach ($this->topics as $i => &$data) {
@@ -202,7 +224,7 @@ class Crawler
 
             $this->getDom()->loadStr($contents[0]);
 
-            // Scan for paging
+            // Identify the links from the "Paging" control
             $paginationItems = $this->getDom()->find('ul.pagination-page-list li.pagination-page-list-item');
             $it              = $paginationItems->getIterator();
             $urls            = [];
@@ -212,7 +234,6 @@ class Crawler
                 if ( ! in_array('active', $classes)) {
                     $links = $current->find('a');
                     if ($links) {
-                        /** @var HtmlNode $link */
                         $link   = $links[0];
                         $urls[] = $link->getAttribute('href');
                     }
@@ -221,8 +242,17 @@ class Crawler
             }
 
 
-            while (count($urls) > 0) {
-                echo( sprintf( '   Retrieving %d additional pages: ', count($urls)));
+            // Retrieve and scan the remaining review pages for this topic.
+            // It is not uncommon for a "get" call to Cochrane to fail,
+            // so we continue to try to fetch pages until we have them all.
+            // Every time a fetch is successful, we null out that URL;
+            // we know we are done when the $urls[] array is empty.
+
+            // It is, in theory, possible that a URL fails repeatedly,
+            // so we include a retry limit, just to be safe.
+            $retries = 3;   // Failsafe
+            while ((count($urls) > 0) and ($retries > 0)) {
+                echo(sprintf('   Retrieving %d additional page(s): ', count($urls)));
                 $promises = [];
                 for ($j = 0; $j < count($urls); $j++) {
                     $promises[] = $this->getGuzzleClient()->getAsync($urls[$j]);
@@ -237,57 +267,32 @@ class Crawler
                     } else {
                         $reason = $response['reason'];
                         echo(sprintf("FAILED retrieving page %d: ({$reason->getCode()})... ", $j + 1));
-//                        $contents[] = $reason->getMessage();
                     }
                 }
 
-                // Remove all the empty values from the URL arrays
-                $urls = array_filter($urls);
-                $urls = array_values($urls);
-                echo( PHP_EOL);
+                // Remove all the empty values from the URL arrays; retry any remaining URLs next time through the loop
+                $urls = array_values(array_filter($urls));
+                $retries--;
+                echo(PHP_EOL);
             }
 
-            echo(sprintf( "   Scanning %d pages in total: ", count($contents)));
+            echo(sprintf("   Scanning %d page(s) in total: ", count($contents)));
             $page = 1;
             foreach ($contents as $content) {
-                echo( "Page $page... ");
-                $this->parseTopicSubpage($data[ 'topic'], $content );
+                echo("Page $page... ");
+                $this->parseTopicSubpage($data['topic'], $content);
                 $page++;
             }
-            echo( PHP_EOL );
+            echo(PHP_EOL);
         }
     }
 
-    public function fetchEachTopicFrontPage()
-    {
-        $promises = [];
-        foreach ($this->topics as $i => &$data) {
-            $promises[] = $this->getGuzzleClient()->getAsync($data['urls'][0]);
-        }
-        echo(sprintf('Preparing to download front pages for %d topics...', count($promises)) . PHP_EOL);
-
-        // We now have a promise for page 1 for each topic (in the same order as $this->topics);
-        // resolve by scanning the page for pagination links.
-        $crawler = $this;
-        Each::of(
-            $promises,
-            function ($response, $i) use ($crawler) {
-                $crawler->parseTopicFrontPage($response, $i, false);
-            },
-            function ($reason, $index) {
-                echo("Failed index $index: \n");
-                echo($reason->getMessage());
-            }
-        )->wait();
-
-        return;
-    }
 
     /**
-     * Parse "Page 1" for a topic and search the DOM for "Paging" navigation links, to retrieve the URLs for the sub-pages for this topic
+     * Scan a "Topics" page for all review summaries and extract the meta-data.
      *
-     * @param $response
-     * @param $i
+     * @param  string  $topic
+     * @param  string  $contents
      *
      * @return void
      * @throws ChildNotFoundException
@@ -295,126 +300,23 @@ class Crawler
      * @throws NotLoadedException
      * @throws StrictException
      */
-    public function parseTopicFrontPage($response, $i)
-    {
-        static $count = 1;
-        $topic     = $this->topics[$i];
-        $topicName = $topic['topic'];
-
-        echo(sprintf('Scanning page %d, "%s," for pagination URLs... ', $count++, $topicName));
-
-        $body                           = $response->getBody();
-        $this->topics[$i]['contents'][] = $body->getContents();
-
-        // Now parse the contents of the page and scan it for all sub-pages (found in the Paging navigation control)
-        $this->getDom()->loadStr($this->topics[$i]['contents'][0]);
-        $paginationItems = $this->getDom()->find('ul.pagination-page-list li.pagination-page-list-item');
-        $it              = $paginationItems->getIterator();
-        while ($it->valid()) {
-            $current = $it->current();
-            $classes = explode(' ', $current->getAttribute('class'));
-            if ( ! in_array('active', $classes)) {
-                $links = $current->find('a');
-                if ($links) {
-                    /** @var HtmlNode $link */
-                    $link                       = $links[0];
-                    $href                       = $link->getAttribute('href');
-                    $this->topics[$i]['urls'][] = $href;
-                }
-            }
-
-            $it->next();
-        }
-        echo(sprintf("%d pages(s)\n", count($this->topics[$i]['urls'])));
-
-        // We now have the contents for the front page, so we can erase the URL for it, so we never try to fetch it again
-//        $this->topics[$i]['urls'] = [];
-        array_shift($this->topics[$i]['urls']);
-
-
-        return;
-    }
-
-    /**
-     * Having found the URLs for all subpages for all topics, download those pages for further processing
-     *
-     * @return void
-     */
-    public function fetchAllTopicSubpages()
-    {
-        foreach ($this->topics as $i => &$topic) {
-            while (count($topic['urls']) > 0) {
-                echo(sprintf(
-                    '%d) Fetching %d subpage(s) for topic "%s"... ',
-                    $i + 1,
-                    count($topic['urls']),
-                    $topic['topic']
-                ));
-
-                $promises = [];
-                for ($j = 0; $j < count($topic['urls']); $j++) {
-                    $promises[] = $this->getGuzzleClient()->getAsync($topic['urls'][$j]);
-                }
-
-//                $responses = Promise\Utils::settle($promises)->wait();
-//                foreach ($responses as $k => $response) {
-//                    echo(sprintf("sub-page %d... ", $k + 1));
-//                    if ('fulfilled' === $response['state']) {
-//                        $body                = $response['value']->getBody();
-//                        $topic['contents'][] = $body->getContents();   // Append this page (ordering is not important)
-//                        $topic['urls'][$k]   = null;                   // Erase a URL which has been successfully fetched
-//                    } else {
-//                        $reason = $response['reason'];
-//                        echo(sprintf("sub-page %d FAILED ({$reason->getCode()})... ", $j + 1));
-//                        $topic['contents'][$j + 1] = $reason->getMessage();
-//                    }
-//                }
-
-                // Remove all the empty values from the URL arrays
-                $topic['urls'] = array_filter($topic['urls']);
-                $topic['urls'] = array_values($topic['urls']);
-
-                echo(PHP_EOL);
-            }
-        }
-
-        return;
-    }
-
-    public function parseTopicSubpages()
-    {
-        foreach ($this->topics as $topic) {
-            echo(sprintf('Scanning %d subpages for topic "%s"... ', count($topic['contents']), $topic['topic']) . PHP_EOL);
-            foreach ($topic['contents'] as $subpage) {
-                $this->parseTopicSubPage($topic['topic'], $subpage);
-            }
-        }
-    }
-
-
-    /**
-     * Get the contents
-     *
-     * @param  string  $topic
-     * @param  ResponseInterface  $response
-     * @param  bool  $follow
-     *
-     * @return int
-     * @throws ChildNotFoundException
-     * @throws NotLoadedException
-     */
     public function parseTopicSubPage(string $topic, string $contents)
     {
-        $b = $this->getDom()->loadStr($contents);
-        if ( !$b ) {
-            exit( "DIE! DIE! DIE!\n");
-        }
+        $this->getDom()->loadStr($contents);
         $reviewItems = $this->getDom()->find('.search-results-item');
         foreach ($reviewItems as $item) {
             $this->summary[] = $this->getReview($topic, $item);
         }
     }
 
+    /**
+     * Parse a ".search-results-item" node for review meta-data to be included in the summary
+     *
+     * @param $topic
+     * @param  HtmlNode  $review
+     *
+     * @return array
+     */
     public function getReview($topic, HtmlNode $review): array
     {
         $summary = [
@@ -452,61 +354,5 @@ class Crawler
 
         return $summary;
     }
-
-
-//    public function getReviews(string $url, bool $follow = false): ?array
-//    {
-//        $summary = [];
-//        try {
-//            $response = $this->getGuzzleClient()->getAsync($url);
-//            $body     = $response->getBody();
-//            $contents = $body->getContents();
-//
-//            $dom = new Dom();
-//            $dom->loadStr($contents);
-//
-//            $n = 1;
-//
-//            if ($follow) {
-//                $pages = $dom->find('ul.pagination-page-list li.pagination-page-list-item');
-//                if ($pages) {
-//                    echo(count($pages) . " page(s): ");
-//                } else {
-//                    echo("1 page: ");
-//                }
-//                echo("$n... ");
-//                $n++;
-//            }
-//
-//            $reviews = $dom->find('.search-results-item');
-//            foreach ($reviews as $review) {
-//                $this->summary[] = $this->getReview($review);
-//            }
-//
-//            if ($follow) {
-//                /** @var HtmlNode $page */
-//                foreach ($pages as $page) {
-//                    $classes = explode(' ', $page->getAttribute('class'));
-//                    if (in_array('active', $classes)) {
-//                        continue;
-//                    }
-//                    $links = $page->find('a');
-//                    if ($links) {
-//                        /** @var HtmlNode $link */
-//                        $link = $links[0];
-//                        $href = $link->getAttribute('href');
-//                        echo("$n... ");
-//                        $n++;
-//                        $summary = array_merge($summary, $this->getReviews($href, false));
-//                    }
-//                }
-//            }
-//        } catch (Exception $e) {
-//            echo $e->getMessage() . PHP_EOL;
-//        }
-//
-//        return $summary;
-//    }
-
-
 }
+

@@ -5,11 +5,10 @@ namespace Sbehnfeldt\CochraneCrawler;
 require_once 'vendor/autoload.php';
 
 
-
 // Set the default timezone (optional, but recommended)
 date_default_timezone_set('America/New_York');
 $start = time();
-echo "Start: " . date( 'H:i:s', $start ) . PHP_EOL;
+echo "Start: " . date('H:i:s', $start) . PHP_EOL;
 
 
 $crawler = new Crawler();
@@ -24,6 +23,6 @@ fclose($f);
 echo("Done\n");
 
 $finish = time();
-echo "Finish: " . date( 'H:i:s', $finish ) . PHP_EOL;
-echo "Elapsed: " . $finish - $start  . " seconds" . PHP_EOL;
+echo "Finish: " . date('H:i:s', $finish) . PHP_EOL;
+echo "Elapsed: " . $finish - $start . " seconds" . PHP_EOL;
 exit(0);
